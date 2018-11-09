@@ -146,8 +146,15 @@ public final class Node<V> {
     // Collect the parent-child relationships between all spans.
     Map<String, String> idToParent = new LinkedHashMap<>(idToNode.size());
 
-    /** Returns false after logging to FINE if the value couldn't be added */
-    public boolean addNode(@Nullable String parentId, String id, V value) {
+    /**
+     * This is a variant of a normal parent/child graph specialized for Zipkin. In a Zipkin tree, a
+     * parent and child can share the same ID if in an RPC. This variant treats a {@code shared}
+     * node as a child of any node matching the same ID.
+     *
+     * @return false after logging to FINE if the value couldn't be added
+     */
+    public boolean addNode(@Nullable String parentId, String id, @Nullable Boolean shared,
+      V value) {
       if (parentId != null) {
         if (parentId.equals(id)) {
           if (logger.isLoggable(FINE)) {
@@ -157,15 +164,30 @@ public final class Node<V> {
           return false;
         }
       }
-      idToParent.put(id, parentId);
-      entries.add(new Entry<>(parentId, id, value));
+      boolean sharedV = Boolean.TRUE.equals(shared);
+      if (sharedV) {
+        idToParent.put(id + "-s", id);
+      } else {
+        idToParent.put(id, parentId);
+      }
+      entries.add(new Entry<>(parentId, id, sharedV, value));
       return true;
     }
 
     void processNode(Entry<V> entry) {
-      String parentId = entry.parentId != null ? entry.parentId : idToParent.get(entry.id);
-      String id = entry.id;
+      String id = entry.id, parentId = entry.parentId;
       V value = entry.value;
+
+      if (entry.shared) {
+        parentId = id;
+        id += "-s";
+      } else if (parentId != null) {
+        String sharedParentId = parentId + "-s";
+        if (idToParent.containsKey(sharedParentId)) {
+          parentId = sharedParentId;
+          idToParent.put(id, sharedParentId);
+        }
+      }
 
       if (parentId == null) {
         if (rootId != null) {
@@ -223,19 +245,29 @@ public final class Node<V> {
   static final class Entry<V> {
     @Nullable final String parentId;
     final String id;
+    final boolean shared;
     final V value;
 
-    Entry(@Nullable String parentId, String id, V value) {
+    Entry(@Nullable String parentId, String id, boolean shared, V value) {
       if (id == null) throw new NullPointerException("id == null");
       if (value == null) throw new NullPointerException("value == null");
       this.parentId = parentId;
       this.id = id;
+      this.shared = shared;
       this.value = value;
     }
 
     @Override
     public String toString() {
-      return "Entry{parentId=" + parentId + ", id=" + id + ", value=" + value + "}";
+      return "Entry{parentId="
+        + parentId
+        + ", id="
+        + id
+        + ", shared="
+        + shared
+        + ", value="
+        + value
+        + "}";
     }
   }
 
